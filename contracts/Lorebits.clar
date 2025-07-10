@@ -21,11 +21,18 @@
 (define-constant err-story-not-found (err u106))
 (define-constant err-chapter-locked (err u107))
 (define-constant err-already-unlocked (err u108))
+(define-constant err-proposal-not-found (err u109))
+(define-constant err-already-voted (err u110))
+(define-constant err-proposal-closed (err u111))
+(define-constant err-not-collaborator (err u112))
+(define-constant err-invalid-vote (err u113))
 
 ;; data vars
 (define-data-var last-token-id uint u0)
 (define-data-var total-stories uint u0)
 (define-data-var mint-price uint u1000000) ;; 1 STX in microSTX
+(define-data-var total-proposals uint u0)
+(define-data-var proposal-duration uint u144) ;; ~24 hours in blocks
 
 ;; data maps
 (define-map token-count principal uint)
@@ -55,6 +62,40 @@
 (define-map user-unlocks {user: principal, story-id: uint, chapter: uint} bool)
 (define-map user-story-points principal uint)
 
+(define-map story-collaborators {story-id: uint, user: principal} {
+    role: (string-utf8 16),
+    voting-power: uint,
+    contribution-score: uint
+})
+
+(define-map story-proposals uint {
+    story-id: uint,
+    proposer: principal,
+    title: (string-utf8 128),
+    description: (string-utf8 512),
+    option-a: (string-utf8 256),
+    option-b: (string-utf8 256),
+    votes-a: uint,
+    votes-b: uint,
+    total-votes: uint,
+    end-block: uint,
+    status: (string-utf8 16),
+    created-at: uint
+})
+
+(define-map proposal-votes {proposal-id: uint, voter: principal} {
+    choice: (string-utf8 8),
+    voting-power: uint,
+    timestamp: uint
+})
+
+(define-map story-governance {story-id: uint} {
+    voting-threshold: uint,
+    min-voting-power: uint,
+    collaboration-mode: (string-utf8 16),
+    governance-token-required: uint
+})
+
 ;; public functions
 
 ;; Mint a new lorebit NFT
@@ -63,7 +104,7 @@
         (
             (token-id (+ (var-get last-token-id) u1))
         )
-        (asserts! (>= (stx-get-balance tx-sender) (var-get mint-price)) (err u109))
+        (asserts! (>= (stx-get-balance tx-sender) (var-get mint-price)) (err u200))
         (try! (stx-transfer? (var-get mint-price) tx-sender contract-owner))
         (try! (nft-mint? lorebit token-id tx-sender))
         (map-set token-metadata token-id {
@@ -179,6 +220,161 @@
     )
 )
 
+;; Story Collaboration & Voting System Functions
+
+;; Setup governance for a story
+(define-public (setup-story-governance (story-id uint) (voting-threshold uint) (min-voting-power uint) (collaboration-mode (string-utf8 16)) (governance-token-required uint))
+    (let 
+        (
+            (story (unwrap! (map-get? stories story-id) err-story-not-found))
+        )
+        (asserts! (is-eq (get creator story) tx-sender) err-owner-only)
+        (map-set story-governance {story-id: story-id} {
+            voting-threshold: voting-threshold,
+            min-voting-power: min-voting-power,
+            collaboration-mode: collaboration-mode,
+            governance-token-required: governance-token-required
+        })
+        (ok true)
+    )
+)
+
+;; Add collaborator to a story
+(define-public (add-collaborator (story-id uint) (collaborator principal) (role (string-utf8 16)) (voting-power uint))
+    (let 
+        (
+            (story (unwrap! (map-get? stories story-id) err-story-not-found))
+        )
+        (asserts! (is-eq (get creator story) tx-sender) err-owner-only)
+        (map-set story-collaborators {story-id: story-id, user: collaborator} {
+            role: role,
+            voting-power: voting-power,
+            contribution-score: u0
+        })
+        (ok true)
+    )
+)
+
+;; Create a story proposal
+(define-public (create-proposal (story-id uint) (title (string-utf8 128)) (description (string-utf8 512)) (option-a (string-utf8 256)) (option-b (string-utf8 256)))
+    (let 
+        (
+            (proposal-id (+ (var-get total-proposals) u1))
+            (story (unwrap! (map-get? stories story-id) err-story-not-found))
+            (governance (map-get? story-governance {story-id: story-id}))
+            (collaborator (map-get? story-collaborators {story-id: story-id, user: tx-sender}))
+        )
+        (asserts! (or (is-eq (get creator story) tx-sender) (is-some collaborator)) err-not-collaborator)
+        (map-set story-proposals proposal-id {
+            story-id: story-id,
+            proposer: tx-sender,
+            title: title,
+            description: description,
+            option-a: option-a,
+            option-b: option-b,
+            votes-a: u0,
+            votes-b: u0,
+            total-votes: u0,
+            end-block: (+ stacks-block-height (var-get proposal-duration)),
+            status: u"active",
+            created-at: stacks-block-height
+        })
+        (var-set total-proposals proposal-id)
+        (ok proposal-id)
+    )
+)
+
+;; Vote on a story proposal
+(define-public (vote-on-proposal (proposal-id uint) (choice (string-utf8 8)))
+    (let 
+        (
+            (proposal (unwrap! (map-get? story-proposals proposal-id) err-proposal-not-found))
+            (story-id (get story-id proposal))
+            (collaborator (map-get? story-collaborators {story-id: story-id, user: tx-sender}))
+            (existing-vote (map-get? proposal-votes {proposal-id: proposal-id, voter: tx-sender}))
+            (voting-power (calculate-voting-power tx-sender story-id))
+        )
+        (asserts! (or (is-eq choice u"a") (is-eq choice u"b")) err-invalid-vote)
+        (asserts! (is-none existing-vote) err-already-voted)
+        (asserts! (< stacks-block-height (get end-block proposal)) err-proposal-closed)
+        (asserts! (is-eq (get status proposal) u"active") err-proposal-closed)
+        (asserts! (> voting-power u0) err-not-collaborator)
+        
+        (map-set proposal-votes {proposal-id: proposal-id, voter: tx-sender} {
+            choice: choice,
+            voting-power: voting-power,
+            timestamp: stacks-block-height
+        })
+        
+        (if (is-eq choice u"a")
+            (map-set story-proposals proposal-id (merge proposal {
+                votes-a: (+ (get votes-a proposal) voting-power),
+                total-votes: (+ (get total-votes proposal) voting-power)
+            }))
+            (map-set story-proposals proposal-id (merge proposal {
+                votes-b: (+ (get votes-b proposal) voting-power),
+                total-votes: (+ (get total-votes proposal) voting-power)
+            }))
+        )
+        (ok true)
+    )
+)
+
+;; Finalize a proposal
+(define-public (finalize-proposal (proposal-id uint))
+    (let 
+        (
+            (proposal (unwrap! (map-get? story-proposals proposal-id) err-proposal-not-found))
+            (story-id (get story-id proposal))
+            (story (unwrap! (map-get? stories story-id) err-story-not-found))
+            (governance (map-get? story-governance {story-id: story-id}))
+            (threshold (if (is-some governance) (get voting-threshold (unwrap-panic governance)) u10))
+        )
+        (asserts! (or (is-eq (get creator story) tx-sender) (is-eq (get proposer proposal) tx-sender)) err-owner-only)
+        (asserts! (>= stacks-block-height (get end-block proposal)) err-proposal-closed)
+        (asserts! (is-eq (get status proposal) u"active") err-proposal-closed)
+        (asserts! (>= (get total-votes proposal) threshold) err-insufficient-points)
+        
+        (let ((winner (if (> (get votes-a proposal) (get votes-b proposal)) u"a" u"b")))
+            (map-set story-proposals proposal-id (merge proposal {
+                status: u"finalized"
+            }))
+            (try! (reward-participants proposal-id))
+            (ok winner)
+        )
+    )
+)
+
+;; Reward voting participants
+(define-public (reward-participants (proposal-id uint))
+    (let 
+        (
+            (proposal (unwrap! (map-get? story-proposals proposal-id) err-proposal-not-found))
+            (reward-amount u25)
+        )
+        (asserts! (is-eq (get status proposal) u"finalized") err-proposal-closed)
+        (try! (ft-mint? story-points reward-amount (get proposer proposal)))
+        (map-set user-story-points (get proposer proposal) (+ (get-user-points (get proposer proposal)) reward-amount))
+        (ok true)
+    )
+)
+
+;; Update collaborator contribution score
+(define-public (update-contribution-score (story-id uint) (collaborator principal) (score-increase uint))
+    (let 
+        (
+            (story (unwrap! (map-get? stories story-id) err-story-not-found))
+            (existing-collab (unwrap! (map-get? story-collaborators {story-id: story-id, user: collaborator}) err-not-collaborator))
+        )
+        (asserts! (is-eq (get creator story) tx-sender) err-owner-only)
+        (map-set story-collaborators {story-id: story-id, user: collaborator} 
+            (merge existing-collab {
+                contribution-score: (+ (get contribution-score existing-collab) score-increase)
+            }))
+        (ok true)
+    )
+)
+
 ;; read only functions
 
 ;; Get last token ID
@@ -239,6 +435,41 @@
     (var-get mint-price)
 )
 
+;; Get proposal details
+(define-read-only (get-proposal (proposal-id uint))
+    (map-get? story-proposals proposal-id)
+)
+
+;; Get proposal vote
+(define-read-only (get-proposal-vote (proposal-id uint) (voter principal))
+    (map-get? proposal-votes {proposal-id: proposal-id, voter: voter})
+)
+
+;; Get story governance settings
+(define-read-only (get-story-governance (story-id uint))
+    (map-get? story-governance {story-id: story-id})
+)
+
+;; Get collaborator info
+(define-read-only (get-collaborator (story-id uint) (user principal))
+    (map-get? story-collaborators {story-id: story-id, user: user})
+)
+
+;; Get total proposals
+(define-read-only (get-total-proposals)
+    (var-get total-proposals)
+)
+
+;; Check if user is collaborator
+(define-read-only (is-collaborator (story-id uint) (user principal))
+    (is-some (map-get? story-collaborators {story-id: story-id, user: user}))
+)
+
+;; Get active proposals for a story
+(define-read-only (get-story-proposals (story-id uint))
+    (ok story-id)
+)
+
 ;; private functions
 
 ;; Check if user owns required tokens
@@ -252,6 +483,34 @@
 (define-private (check-single-token (token-id uint) (prev-result bool) (user principal))
     (and prev-result 
          (is-eq (some user) (nft-get-owner? lorebit token-id)))
+)
+
+;; Calculate voting power for a user on a story
+(define-private (calculate-voting-power (user principal) (story-id uint))
+    (let 
+        (
+            (collaborator (map-get? story-collaborators {story-id: story-id, user: user}))
+            (story (unwrap! (map-get? stories story-id) u0))
+            (user-points (get-user-points user))
+            (user-tokens (get-balance user))
+        )
+        (if (is-some collaborator)
+            (let 
+                (
+                    (collab-data (unwrap-panic collaborator))
+                    (base-power (get voting-power collab-data))
+                    (contribution-bonus (/ (get contribution-score collab-data) u10))
+                    (token-bonus (/ user-tokens u5))
+                    (points-bonus (/ user-points u50))
+                )
+                (+ base-power contribution-bonus token-bonus points-bonus)
+            )
+            (if (is-eq (get creator story) user)
+                (+ u50 (/ user-tokens u3) (/ user-points u25))
+                u0
+            )
+        )
+    )
 )
 
 ;; Get contract info
