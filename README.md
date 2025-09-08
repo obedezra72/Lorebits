@@ -16,6 +16,9 @@ Each **Lorebit** is a unique NFT that represents a fragment of a larger narrativ
 - 💎 **Story Points System**: Earn points by minting, spend them to unlock chapters
 - 🔥 **Burn for Rewards**: Sacrifice your NFTs for bonus story points
 - 🏆 **Rarity System**: Legendary, Rare, and Common Lorebits with different point values
+- 📚 **Reader Rewards**: Daily reading streaks, review system, and achievement badges
+- 🏅 **Achievement Badges**: Earn "Reviewer" and "WeeklyStreak" badges for engagement
+- 💬 **Chapter Reviews**: Submit reviews and earn bonus story points
 
 ## 🚀 Getting Started
 
@@ -79,6 +82,13 @@ Each **Lorebit** is a unique NFT that represents a fragment of a larger narrativ
 - **Rare** 💙: 50 story points, 100 bonus when burned  
 - **Legendary** 🌟: 100 story points, 200 bonus when burned
 
+### Reader Rewards System 🎯
+- **Daily Reading**: Log your reading activity to build streaks
+- **Streak Bonuses**: Every 7-day streak earns 10 bonus points + "WeeklyStreak" badge
+- **Chapter Reviews**: Submit thoughtful reviews for 10 story points each
+- **Achievement Badges**: Collect "Reviewer" and "WeeklyStreak" badges
+- **Base Reading Reward**: 5 story points for each chapter read
+
 ## 📋 Contract Functions
 
 ### Public Functions
@@ -88,6 +98,8 @@ Each **Lorebit** is a unique NFT that represents a fragment of a larger narrativ
 - `unlock-chapter` - Unlock story content
 - `transfer` - Transfer NFTs
 - `burn-for-points` - Burn NFTs for story points
+- `log-reading` - Log reading activity and maintain streaks
+- `submit-review` - Submit chapter reviews for rewards
 
 ### Read-Only Functions
 - `get-token-metadata` - View NFT details
@@ -95,6 +107,8 @@ Each **Lorebit** is a unique NFT that represents a fragment of a larger narrativ
 - `get-chapter-content` - Read unlocked chapters
 - `is-chapter-unlocked` - Check unlock status
 - `get-user-points` - Check story point balance
+- `get-reader-profile` - View reader stats, streaks, and badges
+- `get-chapter-review` - Read specific chapter reviews
 
 ## 🛠️ Development
 

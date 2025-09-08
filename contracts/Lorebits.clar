@@ -62,6 +62,16 @@
 (define-map user-unlocks {user: principal, story-id: uint, chapter: uint} bool)
 (define-map user-story-points principal uint)
 
+;; Reader Rewards System Maps
+(define-map reader-profile principal {
+    last-read-block: uint,
+    streak: uint,
+    total-read: uint,
+    badges: (list 10 (string-utf8 32))
+})
+
+(define-map chapter-reviews {story-id: uint, chapter: uint, reviewer: principal} (string-utf8 256))
+
 (define-map story-collaborators {story-id: uint, user: principal} {
     role: (string-utf8 16),
     voting-power: uint,
@@ -375,6 +385,67 @@
     )
 )
 
+;; Reader Rewards System Public Functions
+
+;; Log reading activity and update streak
+(define-public (log-reading (story-id uint) (chapter uint))
+    (let 
+        (
+            (is-unlocked (is-chapter-unlocked tx-sender story-id chapter))
+            (new-streak (update-streak tx-sender))
+            (base-reward u5)
+        )
+        (asserts! is-unlocked err-chapter-locked)
+        
+        ;; Mint base reading reward
+        (try! (ft-mint? story-points base-reward tx-sender))
+        (map-set user-story-points tx-sender (+ (get-user-points tx-sender) base-reward))
+        
+        ;; Check for streak bonus (every 7 days)
+        (if (is-eq (mod new-streak u7) u0)
+            (let ((streak-bonus u10))
+                (try! (ft-mint? story-points streak-bonus tx-sender))
+                (map-set user-story-points tx-sender (+ (get-user-points tx-sender) streak-bonus))
+                (grant-badge tx-sender u"WeeklyStreak")
+                (ok {points-earned: (+ base-reward streak-bonus), streak: new-streak})
+            )
+            (ok {points-earned: base-reward, streak: new-streak})
+        )
+    )
+)
+
+;; Submit a review for a chapter
+(define-public (submit-review (story-id uint) (chapter uint) (review (string-utf8 256)))
+    (let 
+        (
+            (is-unlocked (is-chapter-unlocked tx-sender story-id chapter))
+            (review-key {story-id: story-id, chapter: chapter, reviewer: tx-sender})
+            (existing-review (map-get? chapter-reviews review-key))
+            (profile (map-get? reader-profile tx-sender))
+            (current-badges (if (is-some profile) (get badges (unwrap-panic profile)) (list)))
+            (review-reward u10)
+        )
+        (asserts! is-unlocked err-chapter-locked)
+        (asserts! (is-none existing-review) err-already-unlocked) ;; Reusing error for duplicate review
+        (asserts! (> (len review) u0) (err u201)) ;; Review cannot be empty
+        
+        ;; Store the review
+        (map-set chapter-reviews review-key review)
+        
+        ;; Mint review reward
+        (try! (ft-mint? story-points review-reward tx-sender))
+        (map-set user-story-points tx-sender (+ (get-user-points tx-sender) review-reward))
+        
+        ;; Grant "Reviewer" badge if first time reviewing
+        (if (is-none (index-of? current-badges u"Reviewer"))
+            (grant-badge tx-sender u"Reviewer")
+            true
+        )
+        
+        (ok review-reward)
+    )
+)
+
 ;; read only functions
 
 ;; Get last token ID
@@ -470,7 +541,68 @@
     (ok story-id)
 )
 
+;; Reader Rewards System Read-Only Functions
+
+;; Get reader profile
+(define-read-only (get-reader-profile (user principal))
+    (map-get? reader-profile user)
+)
+
+;; Get chapter review by specific reviewer
+(define-read-only (get-chapter-review (story-id uint) (chapter uint) (reviewer principal))
+    (map-get? chapter-reviews {story-id: story-id, chapter: chapter, reviewer: reviewer})
+)
+
 ;; private functions
+
+;; Reader Rewards System Private Functions
+
+;; Grant badge to user if not already owned
+(define-private (grant-badge (user principal) (badge (string-utf8 32)))
+    (let 
+        (
+            (profile (default-to {last-read-block: u0, streak: u0, total-read: u0, badges: (list)} 
+                               (map-get? reader-profile user)))
+            (current-badges (get badges profile))
+        )
+        (if (is-none (index-of? current-badges badge))
+            (if (< (len current-badges) u10)
+                (map-set reader-profile user (merge profile {
+                    badges: (unwrap-panic (as-max-len? (append current-badges badge) u10))
+                }))
+                false
+            )
+            false
+        )
+    )
+)
+
+;; Update reading streak for user
+(define-private (update-streak (user principal))
+    (let 
+        (
+            (profile (default-to {last-read-block: u0, streak: u0, total-read: u0, badges: (list)} 
+                               (map-get? reader-profile user)))
+            (today stacks-block-height)
+            (last-block (get last-read-block profile))
+            (current-streak (get streak profile))
+        )
+        (let 
+            (
+                (new-streak (if (and (> last-block u0) (is-eq (- today last-block) u1))
+                               (+ current-streak u1)
+                               u1))
+            )
+            (map-set reader-profile user {
+                last-read-block: today,
+                streak: new-streak,
+                total-read: (+ (get total-read profile) u1),
+                badges: (get badges profile)
+            })
+            new-streak
+        )
+    )
+)
 
 ;; Check if user owns required tokens
 (define-private (check-token-ownership (user principal) (token-list (list 10 uint)))
